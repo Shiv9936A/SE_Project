@@ -1,0 +1,3 @@
+Sample, anonymized project note for the Phase 3 upload endpoint.
+
+The lending team needs a clear application status and an auditable review history. Existing customer identity checks are provided by a legacy service. Security and compliance stakeholders must approve the final workflow. No real customer or account information is included.

@@ -1,0 +1,18 @@
+{
+  "requirement_stability": "Moderately Changing",
+  "risk_level": "High",
+  "security_criticality": "High",
+  "compliance_criticality": "High",
+  "expected_changes": "Occasional",
+  "continuous_delivery": "No",
+  "legacy_integration": "Yes",
+  "formal_verification": "Yes",
+  "stakeholder_availability": "Medium",
+  "complexity": "High",
+  "project_size": "Medium",
+  "failure_impact": "High",
+  "testing_requirement": "Extensive",
+  "budget_constraint": "Medium",
+  "timeline_constraint": "Moderate",
+  "stakeholder_notes": "Credit and compliance stakeholders review decision rules. Keep decisions auditable."
+}

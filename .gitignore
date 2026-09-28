@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+# Frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+# Local configuration and data
+.env
+backend/data/chroma/*
+!backend/data/chroma/.gitkeep
+*.log
+
+

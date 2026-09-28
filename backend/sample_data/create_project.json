@@ -1,0 +1,9 @@
+{
+  "project_name": "Small Business Lending Modernization",
+  "description": "Modernize loan application intake, decision tracking, and status communication for small business customers.",
+  "domain": "Loan processing",
+  "organization_type": "Retail bank",
+  "team_size": 10,
+  "stakeholders": "Small business applicants, lending operations, product owner, architecture, security, compliance",
+  "initial_requirements": "Applicants can submit a loan application and authorized staff can view its auditable decision status."
+}
