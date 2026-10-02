@@ -151,6 +151,26 @@ def test_gemini_retries_transient_error_before_failing_over(monkeypatch):
     assert attempted == ["gemini-3.8-flash", "gemini-3.8-flash"]
 
 
+def test_gemini_rate_limit_uses_configured_fallback(monkeypatch):
+    monkeypatch.setattr(llm_module.time, "sleep", lambda _seconds: None)
+
+    class RateLimited(Exception):
+        code = 429
+        status = "RESOURCE_EXHAUSTED"
+
+    class Models:
+        def generate_content(self, **kwargs):
+            if kwargs["model"] == "primary":
+                raise RateLimited("temporary quota limit")
+            return SimpleNamespace(text="Fallback after rate limit")
+
+    provider = GeminiChatProvider(
+        api_key="test-key", model="primary", fallback_model="secondary",
+        client=SimpleNamespace(models=Models()),
+    )
+    assert provider.invoke([HumanMessage(content="hello")]).content == "Fallback after rate limit"
+
+
 def test_gemini_provider_does_not_fail_over_for_permanent_errors():
     attempted = []
 

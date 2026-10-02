@@ -19,10 +19,12 @@ class ChromaVectorStore:
             metadata={"hnsw:space": "cosine", "description": "Requirements document chunks"},
         )
 
-    def existing_ids(self, ids: list[str]) -> set[str]:
+    def metadata_for_ids(self, ids: list[str]) -> dict[str, dict]:
         if not ids:
-            return set()
-        return set(self.collection().get(ids=ids, include=["metadatas"])["ids"])
+            return {}
+        records = self.collection().get(ids=ids, include=["metadatas"])
+        return {str(chunk_id): metadata or {}
+                for chunk_id, metadata in zip(records.get("ids", []), records.get("metadatas", []))}
 
     def upsert(self, ids: list[str], texts: list[str], vectors: list[list[float]], metadata: list[dict]) -> None:
         if ids:

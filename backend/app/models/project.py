@@ -30,6 +30,10 @@ class Project(Base):
     documents: Mapped[list["UploadedDocument"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     recommendations: Mapped[list["GeneratedRecommendation"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     conversations: Mapped[list["Conversation"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    interview: Mapped["InterviewSession | None"] = relationship(back_populates="project", cascade="all, delete-orphan", uselist=False)
+    requirements_analyses: Mapped[list["RequirementsAnalysis"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    governance_analyses: Mapped[list["GovernanceAnalysis"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    analysis_runs: Mapped[list["AnalysisRun"]] = relationship(back_populates="project", cascade="all, delete-orphan", order_by="AnalysisRun.version.desc()")
 
     @property
     def recommendation(self):

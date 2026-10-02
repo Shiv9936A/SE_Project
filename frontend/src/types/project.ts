@@ -24,7 +24,7 @@ export type ProjectForm = {
 };
 
 export const emptyProject: ProjectForm = {
-  projectName: "", description: "", domain: "", organizationType: "", teamSize: 8,
+  projectName: "", description: "", domain: "Generic software system", organizationType: "Other", teamSize: 8,
   stakeholders: "", initialRequirements: "", requirementStability: "",
   riskLevel: "", securityCriticality: "", complianceCriticality: "",
   expectedChanges: "", continuousDelivery: "", legacyIntegration: "",

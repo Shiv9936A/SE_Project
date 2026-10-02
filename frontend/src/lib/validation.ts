@@ -4,7 +4,7 @@ const choice = (options: [string, ...string[]]) => z.enum(options);
 export const projectSchema = z.object({
   projectName: z.string().trim().min(2, "Enter a project name."),
   description: z.string().trim().min(12, "Add a little more context (at least 12 characters)."),
-  domain: z.string().min(1, "Choose a financial domain."),
+  domain: z.string().min(1, "Choose a project domain."),
   organizationType: z.string().min(1, "Choose an organization type."),
   teamSize: z.number().int().min(1, "Team size must be at least 1.").max(10000, "Enter a realistic team size."),
   stakeholders: z.string().trim().min(2, "Add at least one stakeholder group."),

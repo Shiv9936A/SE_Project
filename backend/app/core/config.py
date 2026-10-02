@@ -25,8 +25,12 @@ class Settings(BaseSettings):
     frontend_origin: str = "http://localhost:5173"
     upload_directory: Path = REPO_ROOT / "backend" / "data" / "uploads"
     max_upload_size_mb: int = 20
+    embedding_batch_size: int = 64
     chunk_size: int = 1000
     chunk_overlap: int = 200
+    orchestration_max_retries: int = 1
+    analysis_run_stale_after_minutes: int = 120
+    interview_llm_selection_enabled: bool = False
 
     @field_validator("chroma_persist_directory", mode="before")
     @classmethod

@@ -71,11 +71,12 @@ class EmbeddingService:
             DocumentChunk.document_id == document.id,
         ).order_by(DocumentChunk.chunk_index)).all())
         ids = [str(chunk.id) for chunk in chunks]
-        existing_ids = self.vector_store.existing_ids(ids)
+        existing_metadata = self.vector_store.metadata_for_ids(ids)
         model = settings.embedding_model
         pending = [chunk for chunk in chunks if not (
             chunk.embedding_status == "completed" and chunk.embedding_model == model
-            and str(chunk.id) in existing_ids
+            and existing_metadata.get(str(chunk.id), {}).get("embedding_model") == model
+            and existing_metadata.get(str(chunk.id), {}).get("embedding_provider") == settings.embedding_provider
         )]
         if not pending:
             return {"document_id": document.id, "chunks_processed": 0, "vectors_created": 0}
@@ -86,25 +87,31 @@ class EmbeddingService:
 
         try:
             provider = self._provider()
-            texts = [chunk.chunk_text for chunk in pending]
-            vectors = provider.embed_documents(texts)
-            if len(vectors) != len(pending):
-                raise RuntimeError("Embedding provider returned an unexpected number of vectors.")
-            metadata = []
-            for chunk in pending:
-                chunk.chunk_hash = sha256(chunk.chunk_text.encode("utf-8")).hexdigest()
-                chunk.token_count = self._token_count(chunk.chunk_text)
-                values = {
-                    "project_id": project_id,
-                    "document_id": document.id,
-                    "chunk_id": chunk.id,
-                    "filename": document.original_filename,
-                }
-                # Chroma metadata rejects null values; -1 means the source has no page number.
-                values["page_number"] = chunk.page_number if chunk.page_number is not None else -1
-                metadata.append(values)
-            self.vector_store.upsert(ids=[str(chunk.id) for chunk in pending], texts=texts,
-                                     vectors=vectors, metadata=metadata)
+            batch_size = max(1, min(int(settings.embedding_batch_size), 512))
+            for start in range(0, len(pending), batch_size):
+                batch = pending[start:start + batch_size]
+                texts = [chunk.chunk_text for chunk in batch]
+                vectors = provider.embed_documents(texts)
+                if len(vectors) != len(batch) or not vectors:
+                    raise RuntimeError("Embedding provider returned an unexpected number of vectors.")
+                metadata = []
+                for chunk in batch:
+                    chunk.chunk_hash = sha256(chunk.chunk_text.encode("utf-8")).hexdigest()
+                    chunk.token_count = self._token_count(chunk.chunk_text)
+                    values = {
+                        "project_id": project_id,
+                        "document_id": document.id,
+                        "chunk_id": chunk.id,
+                        "filename": document.original_filename,
+                        "embedding_provider": settings.embedding_provider,
+                        "embedding_model": model,
+                        "embedding_dimension": len(vectors[0]),
+                    }
+                    # Chroma metadata rejects null values; -1 means the source has no page number.
+                    values["page_number"] = chunk.page_number if chunk.page_number is not None else -1
+                    metadata.append(values)
+                self.vector_store.upsert(ids=[str(chunk.id) for chunk in batch], texts=texts,
+                                         vectors=vectors, metadata=metadata)
             for chunk in pending:
                 chunk.embedding_model = model
                 chunk.embedding_status = "completed"
@@ -120,6 +127,12 @@ class EmbeddingService:
                     "embedding_model": settings.embedding_model,
                 },
             )
+            try:
+                self.vector_store.delete([str(chunk.id) for chunk in pending])
+            except Exception as cleanup_error:
+                logger.exception("Could not remove partial document vectors after failed embedding",
+                                 extra={"project_id": project_id, "document_id": document_id,
+                                        "failure_type": type(cleanup_error).__name__})
             db.rollback()
             failed = list(db.scalars(select(DocumentChunk).where(
                 DocumentChunk.id.in_([chunk.id for chunk in pending]),

@@ -1,6 +1,6 @@
 # Requirements Studio
 
-Requirements gathering application with document ingestion, vector search, grounded RAG question answering, and a LangGraph SDLC recommendation workflow. RAG and SDLC recommendation services combine project metadata, questionnaire answers, and retrieved document chunks. The SDLC workflow scores seven supported lifecycle models and persists recommendation history. It does not implement a multi-agent system or automatic final reports.
+Requirements gathering application with an adaptive interview, requirements and governance agents, persistent multi-agent analysis history, document ingestion, vector search, grounded RAG question answering, and LangGraph SDLC workflows. The app combines project metadata, questionnaire answers, interview responses, and project-scoped document evidence for human review.
 
 ## RAG architecture
 
@@ -22,21 +22,21 @@ flowchart TD
 
 ```text
 backend/
-  alembic/versions/             # initial schema through 0004_rag_conversations
+  alembic/versions/             # initial schema through 0008_analysis_run_history
   app/
-    api/routes/                 # projects, documents, search, RAG, SDLC recommendations, health
+    api/routes/                 # projects, interviews, documents, search, RAG, SDLC, agents, and run history
     core/                       # settings, DB session, error handling
-    models/                     # project, questionnaire, documents, recommendations, conversations, messages
+    models/                     # project, questionnaire, documents, recommendations, conversations, interviews, analyses
     parsers/                    # PDF, DOCX, TXT parsers
     repositories/               # database queries
     schemas/                    # API request/response models
-    services/                   # ingestion, vector, prompt, LLM, RAG, scoring, and LangGraph services
+    services/                   # ingestion, vector, prompt, LLM, RAG, requirements/governance agents, SDLC scoring
   data/uploads/                 # uploaded source documents
   data/chroma/                  # persistent ChromaDB collection
   tests/                        # API, RAG, vector, parser tests
   requirements.txt
   alembic.ini
-frontend/                       # React + Vite dashboard and project workflows
+frontend/                       # React + Vite dashboard, interview, documents, chat, and AI analysis history
   src/components/               # shared navigation, states, error boundary, toasts
   src/lib/                       # TanStack Query client, cache keys, validation
   src/pages/                     # home, project dashboard, questionnaire, docs, chat, recommendation
@@ -78,7 +78,7 @@ Install and run the frontend from the repository root:
 
 ```powershell
 Set-Location frontend
-Copy-Item .env.example .env
+if (-not (Test-Path .env)) { Copy-Item .env.example .env } else { Write-Output ".env already exists; leaving it unchanged." }
 npm install
 npm run dev
 ```
@@ -107,7 +107,7 @@ The backend also exposes document preview/chunk APIs, RAG evaluation/debug endpo
 Requires Python 3.11+, Docker Desktop, and Node.js for the frontend. Local sentence-transformer embeddings are used by default, and Gemini generates RAG answers by default. Set `GEMINI_API_KEY` in `.env` before using `/ask` or `/evaluate-rag`. From the repository root:
 
 ```powershell
-Copy-Item .env.example .env
+if (-not (Test-Path .env)) { Copy-Item .env.example .env } else { Write-Output ".env already exists; leaving it unchanged." }
 # Set GEMINI_API_KEY in .env before using /ask or /evaluate-rag.
 docker compose up -d postgres
 Set-Location backend
@@ -120,7 +120,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 PostgreSQL uses host port `5433` to avoid conflicts with a local PostgreSQL service. Embeddings default to `EMBEDDING_PROVIDER=local` and `EMBEDDING_MODEL=all-MiniLM-L6-v2`; the first local embedding run downloads the model weights. To use OpenAI embeddings, set `EMBEDDING_PROVIDER=openai` and `EMBEDDING_MODEL=text-embedding-3-small` in `.env` and provide `OPENAI_API_KEY`. RAG chat defaults to `LLM_PROVIDER=gemini`, `GEMINI_MODEL=gemini-3.8-flash`, and `GEMINI_FALLBACK_MODEL=gemini-3.6-flash,gemini-3.7-flash`; set `GEMINI_API_KEY` in `.env`. Temporary Gemini capacity errors (429/5xx) try each configured fallback model in order. For backward compatibility, set `LLM_PROVIDER=openai`, `LLM_MODEL=gpt-4o-mini`, and `OPENAI_API_KEY` to use OpenAI chat instead. Chat provider/model settings are independent of the embedding provider. `CHROMA_PERSIST_DIRECTORY` and `CHROMA_COLLECTION_NAME` continue to configure the same persistent vector storage. Gemini uses Google's `google-genai` SDK; OpenAI chat remains on `langchain-openai`.
 
-Changing an existing Chroma collection from OpenAI vectors to MiniLM vectors requires a one-time reindex because their vector dimensions differ. Back up or remove `backend/data/chroma`, then regenerate embeddings for the uploaded documents. PostgreSQL document chunks remain available for re-embedding.
+New Chroma vectors record their embedding provider, model, and dimension. Legacy vectors without these tags are treated as stale and are regenerated when **Embed** is run for that document. Embedding calls are bounded to batches of 64 chunks by default (`EMBEDDING_BATCH_SIZE`, clamped to 1–512); a failed multi-batch run removes partial vectors before reporting failure. Changing an existing collection from OpenAI vectors to MiniLM vectors still requires a one-time reindex because their dimensions differ; back up the Chroma directory before rebuilding it. PostgreSQL document chunks and uploaded originals remain available for re-embedding.
 
 Run the frontend separately with `cd frontend`, `npm install`, and `npm run dev`.
 
@@ -184,6 +184,101 @@ Swagger UI: `http://127.0.0.1:8000/docs`; OpenAPI JSON: `/openapi.json`.
 | POST | `/api/projects/{id}/recommend-sdlc` | Run LangGraph retrieval, questionnaire scoring, Gemini/OpenAI reasoning, and persist the recommendation |
 | GET | `/api/projects/{id}/recommendation-history` | List persisted LangGraph recommendation runs |
 | POST | `/api/projects/{id}/compare-sdlc` | Compare two supported SDLC models using questionnaire and retrieved evidence |
+| POST | `/api/projects/{id}/interview/start` | Create or resume a domain-aware requirements interview |
+| POST | `/api/projects/{id}/interview/answer` | Save an answer and select a deterministic adaptive follow-up |
+| GET | `/api/projects/{id}/interview/state` | Read the saved question and answer history, coverage, and progress |
+| POST | `/api/projects/{id}/interview/complete` | Complete the interview after the final answer |
+
+### Adaptive requirements interview (Phase 9)
+
+The project wizard now starts with the project idea, business objective, and user roles. The backend detects a likely domain (including banking, payments, lending, insurance, healthcare, education, commerce, logistics, public services, HR, and manufacturing) and selects a domain-specific opening question. If the idea is unclear or describes a general inventory tool, it uses the generic software system profile. A domain hint in the project profile is used only when text-based detection cannot classify the idea.
+
+Questions come from a deterministic, domain-aware candidate bank so answering does not wait for a Gemini request. Gemini selection is optional via `INTERVIEW_LLM_SELECTION_ENABLED=true`; it can only select supplied candidates and cannot author questions or control interview state. Stakeholders can skip a question; skipped topics remain uncovered and are excluded from generated requirements. The minimum is 6 questions, the default maximum is 12, and high-risk or complex projects can receive up to 15. A deterministic sufficiency check can finish earlier when required coverage is present. Answers mentioning a gateway, manual approval, fraud, audit, or security can prioritize focused follow-ups. Existing RAG retrieval provides optional document evidence and filters out redundant candidate questions. The SDLC recommendation workflow is unchanged.
+
+Phase 10 question selection follows this sequence:
+
+```mermaid
+flowchart LR
+  A[Saved project and interview state] --> B[Domain rules generate unseen candidates]
+  B --> C[Retrieve optional project document evidence]
+  C --> D[Gemini selects a candidate as structured JSON]
+  D --> E{Candidate and topic valid?}
+  E -- yes --> F[Save selected question and safe reason]
+  E -- no or provider error --> G[Choose first deterministic candidate]
+  G --> F
+  F --> H{Deterministic coverage sufficient or limit reached?}
+  H -- no --> I[Wait for answer]
+  H -- yes --> J[Review and complete]
+```
+
+The selector receives the project idea, objective, roles, domain, previous questions and answers, topic coverage, available candidates, and up to five retrieved evidence chunks. It returns `selected_question_id`, matching `topic`, `priority`, and one short user-safe `reason`. The backend validates the ID against the current unseen candidates and validates the topic before saving it. Provider errors, timeouts, invalid keys, malformed JSON, rate limits, and invalid or duplicate selections are logged without logging prompts, complete answers, or keys; the interview continues using deterministic candidate ordering. The frontend displays only the selected question and its short explanation.
+
+The `interview_sessions` PostgreSQL table stores the idea, objective, user roles, detected domain, question/answer history, covered and uncovered topics, current question, progress limit, and completion status. `0005_adaptive_interviews` adds the table without changing existing project or questionnaire records. The existing questionnaire APIs and table remain available as before.
+
+Example PowerShell requests (first create a project using `POST /api/projects` and use its returned ID):
+
+```powershell
+$projectId = "<project-id>"
+$startBody = @{
+  project_idea = "A hospital appointment booking system for local clinics"
+  business_objective = "Reduce booking time and avoid scheduling conflicts"
+  users_roles = "Patients, reception staff, clinicians"
+} | ConvertTo-Json
+$state = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/projects/$projectId/interview/start" -Method Post -ContentType "application/json" -Body $startBody
+$state | ConvertTo-Json -Depth 8
+$answerBody = @{ question_id = $state.current_question.id; answer = "Patients choose a clinic and appointment slot; staff can reschedule." } | ConvertTo-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/projects/$projectId/interview/answer" -Method Post -ContentType "application/json" -Body $answerBody
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/projects/$projectId/interview/state"
+# Repeat /answer with each returned current_question. Once current_question is null:
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/projects/$projectId/interview/complete" -Method Post
+```
+
+The React wizard provides previous/next question navigation, saves answers to PostgreSQL, resumes on refresh, and presents a complete Q&A review before the user finishes the interview. The existing SDLC questionnaire follows this interview and continues to use its original endpoint and schema.
+
+### Requirements analysis agent (Phase 11)
+
+The requirements analysis agent creates a versioned draft from project metadata, the saved questionnaire, any adaptive interview answers, and project-scoped chunks retrieved from ChromaDB. It classifies functional, non-functional, business-rule, data, integration, security/privacy/compliance, and operational requirements; records source evidence; flags ambiguity and conflicting evidence; and reports coverage gaps, testability, and clarification questions. Every generated draft is persisted with status `needs_review`; when the LLM response fails validation or the provider is unavailable, the API persists a deterministic, questionnaire/interview-based draft with status `partial`. The agent never marks results approved.
+
+Migration `0006_requirements_analyses` adds the versioned `requirements_analyses` table. From `backend/`, apply it with `alembic upgrade head`. The newest analysis is returned by the read endpoint.
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/api/projects/{project_id}/analyze-requirements` | Generate and persist a draft. Optional body: `{"top_k": 5}`. |
+| GET | `/api/projects/{project_id}/requirements-analysis` | Read the latest persisted analysis. |
+
+Example PowerShell calls:
+
+```powershell
+$projectId = "<project-id>"
+$analysis = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/projects/$projectId/analyze-requirements" -Method Post -ContentType "application/json" -Body '{"top_k":5}'
+$analysis | ConvertTo-Json -Depth 12
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/projects/$projectId/requirements-analysis" | ConvertTo-Json -Depth 12
+```
+
+The response includes deterministic requirement IDs, category, priority, confidence, provenance, quoted evidence, acceptance criteria, ambiguity, dependencies, tags, and testability. Source references are checked against the actual project context and unsupported citations cause the agent to return its safe partial draft. Review the draft with stakeholders before treating it as an approved specification. Tests: `python -m pytest backend/tests/test_requirements_analysis.py -q` (all backend tests: `python -m pytest backend/tests -q`).
+
+### Governance & SDLC agent (Phase 12)
+
+The Governance Agent requires a saved Phase 11 Requirements Analysis. It consumes that structured result, project details, questionnaire answers, available project-scoped retrieved evidence, and the existing deterministic SDLC scorecard from `score_sdlc_models`. Gemini adds a validated governance plan; it does not replace the Requirements Agent or the deterministic recommender. If Gemini fails, returns malformed JSON, uses unsupported enums, or cites unknown requirements/evidence, the service persists a deterministic plan using the existing scorecard and reports `status: partial` plus a safe `fallback_reason`. Plans are persisted for human review. No API keys, full prompts, or raw model output are stored or logged.
+
+Migration `0007_governance_analyses` adds versioned governance results linked to both the project and the exact requirements analysis used. Apply from `backend/` using `alembic upgrade head`.
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/api/projects/{project_id}/governance-analysis` | Generate and persist a governance plan; requires a Phase 11 analysis. |
+| GET | `/api/projects/{project_id}/governance-analysis` | Return the latest saved governance plan. |
+
+Example PowerShell calls:
+
+```powershell
+$projectId = "<project-id>"
+# Run POST /api/projects/$projectId/analyze-requirements first if no Phase 11 result exists.
+$governance = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/projects/$projectId/governance-analysis" -Method Post
+$governance | ConvertTo-Json -Depth 14
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/projects/$projectId/governance-analysis" | ConvertTo-Json -Depth 14
+```
+
+The response includes the methodology and concise evidence-linked reasoning, deterministic baseline scores, project assessment, lifecycle phases, requirement-linked testing/security activities, documentation, checkpoints, risks, quality gates, prerequisites, and unresolved questions. Supported methods include Agile, Waterfall, Iterative, Spiral, Hybrid, and the existing V-Model, Incremental, Agile Scrum, and RAD scorecard methods. Generated plans use `needs_review`; deterministic or upstream-partial results use `partial`. The UI remains unchanged in this phase.
 
 Create a project and upload a document using the existing project endpoints. Embed it before asking document-grounded questions:
 
@@ -268,4 +363,31 @@ Tests use isolated SQLite, temporary upload and Chroma directories, deterministi
 - [ ] Live RAG responses require `GEMINI_API_KEY` by default; OpenAI chat remains available through `LLM_PROVIDER=openai` and `OPENAI_API_KEY`.
 - [x] Phase 7 adds a LangGraph SDLC recommendation and comparison workflow; no multi-agent workflow or automatic final reports were added.
 
-The LangGraph SDLC recommendation workflow is implemented. Multi-agent workflows remain out of scope.
+The recommendation scorecard uses a LangGraph workflow; Phase 13 adds a separate LangGraph orchestration route for the Phase 11 Requirements Analysis Agent and Phase 12 Governance Agent. SDLC recommendation runs are saved as recommendation records, while multi-agent executions are saved in the Phase 15 `analysis_runs` history.
+
+### Phase 13 multi-agent orchestration
+
+`POST /api/projects/{project_id}/orchestrate` coordinates the existing adaptive interview, Requirements Analysis Agent, and Governance Agent. The graph validates each persisted agent result before handoff and conditionally skips governance if requirements analysis fails validation. Legacy, unlinked analysis rows can be adopted once; later orchestration runs create distinct agent outputs. Both underlying services retain responsibility for analysis, persistence, RAG use, and deterministic fallback.
+
+The endpoint requires a completed adaptive interview and returns HTTP 409 otherwise. Each execution is stored as an `analysis_runs` row with a monotonically increasing project version, terminal status, timestamps, and safe warnings/errors. Requirements and governance outputs link to their run while their existing version-history endpoints remain available. Concurrent runs for one project are rejected; stale `running` rows are recovered after `ANALYSIS_RUN_STALE_AFTER_MINUTES` (default 120). Agent fallback is reported as `partial`. Only transient timeouts, network errors, and provider 502/503/504 failures are retried; `ORCHESTRATION_MAX_RETRIES` defaults to `1` and is capped at `2`.
+
+Example PowerShell request:
+
+```powershell
+$projectId = "<project-id-with-completed-interview>"
+$body = @{ top_k = 5 } | ConvertTo-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/projects/$projectId/orchestrate" -Method Post -ContentType "application/json" -Body $body | ConvertTo-Json -Depth 16
+```
+
+The graph nodes are `load_project_context`, `load_interview`, `run_requirements_agent`, `validate_requirements`, `run_governance_agent`, `validate_governance`, and `finalize`. A conditional edge after requirements validation routes failures directly to finalization. Each execution and its agent output links are stored in `analysis_runs` (Phase 15).
+
+### Phase 15 persistent analysis history
+
+Migration `0008_analysis_run_history` adds the `analysis_runs` table and nullable `analysis_run_id` links on requirements and governance analyses. Run versions are project-scoped; each run stores its status (`running`, `completed`, `partial`, or `failed`), timestamps, orchestration version, per-agent statuses, warnings, and safe errors. An active-run constraint prevents duplicate concurrent execution for the same project. The stale-run timeout is configurable with `ANALYSIS_RUN_STALE_AFTER_MINUTES`.
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| GET | `/api/projects/{project_id}/analysis-runs?limit=50&offset=0` | List newest run versions and summary counts. |
+| GET | `/api/projects/{project_id}/analysis-runs/{run_id}` | Load one run with the exact requirements and governance outputs it produced. |
+
+Apply the migration from `backend/` with `alembic upgrade head`. The AI Analysis page now lists saved versions and loads historical outputs without replacing them with the latest run. Tests: `python -m pytest backend/tests/test_analysis_runs.py -q` and `npm run test -- --run` from `frontend/`.

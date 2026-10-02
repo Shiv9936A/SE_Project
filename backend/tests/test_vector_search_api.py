@@ -70,6 +70,9 @@ def test_embeddings_persist_to_chroma_and_duplicate_call_skips(client, project_p
     assert record["metadatas"][0]["filename"] == "loan-policy.txt"
     assert "chunk_id" in record["metadatas"][0]
     assert record["metadatas"][0]["page_number"] == -1
+    assert record["metadatas"][0]["embedding_model"] == "fake-test-embedding"
+    assert record["metadatas"][0]["embedding_provider"] == settings.embedding_provider
+    assert record["metadatas"][0]["embedding_dimension"] == 4
     chunk = client.get(f"/api/projects/{project['id']}/documents/{document_id}/chunks").json()["items"][0]
     assert chunk["embedding_model"] == "fake-test-embedding"
     assert chunk["embedding_status"] == "completed"
@@ -81,6 +84,52 @@ def test_embeddings_persist_to_chroma_and_duplicate_call_skips(client, project_p
     again = client.post(f"/api/projects/{project['id']}/documents/{document_id}/embed")
     assert again.json()["chunks_processed"] == 0
     assert collection.count() == 1
+
+
+def test_legacy_untagged_vector_is_reembedded_with_model_metadata(client, project_payload, monkeypatch, tmp_path):
+    store = configure_vector_services(monkeypatch, tmp_path)
+    project = create_project(client, project_payload)
+    text = "Loan application decisions require an audit trail."
+    document_id = upload_text(client, project["id"], "legacy.txt", text)
+    first = client.post(f"/api/projects/{project['id']}/documents/{document_id}/embed")
+    assert first.status_code == 200
+    chunk = client.get(f"/api/projects/{project['id']}/documents/{document_id}/chunks").json()["items"][0]
+    store.delete([str(chunk["id"])])
+    store.upsert(
+        ids=[str(chunk["id"])], texts=[text], vectors=[FakeEmbeddings._vector(text)],
+        metadata=[{"project_id": project["id"], "document_id": document_id,
+                   "chunk_id": chunk["id"], "filename": "legacy.txt", "page_number": -1}],
+    )
+    retried = client.post(f"/api/projects/{project['id']}/documents/{document_id}/embed")
+    assert retried.status_code == 200
+    assert retried.json()["vectors_created"] == 1
+    metadata = store.collection().get(include=["metadatas"])["metadatas"][0]
+    assert metadata["embedding_model"] == settings.embedding_model
+    assert metadata["embedding_provider"] == settings.embedding_provider
+
+
+def test_large_document_embeddings_are_batched(client, project_payload, monkeypatch, tmp_path):
+    class RecordingEmbeddings(FakeEmbeddings):
+        def __init__(self):
+            self.batch_sizes = []
+
+        def embed_documents(self, texts):
+            self.batch_sizes.append(len(texts))
+            return super().embed_documents(texts)
+
+    configure_vector_services(monkeypatch, tmp_path)
+    recorder = RecordingEmbeddings()
+    monkeypatch.setattr(embedding_service, "embeddings", recorder)
+    monkeypatch.setattr(settings, "chunk_size", 32)
+    monkeypatch.setattr(settings, "chunk_overlap", 0)
+    monkeypatch.setattr(settings, "embedding_batch_size", 3)
+    project = create_project(client, project_payload)
+    document_id = upload_text(client, project["id"], "large-notes.txt", "Loan application audit. " * 20)
+    response = client.post(f"/api/projects/{project['id']}/documents/{document_id}/embed")
+    assert response.status_code == 200
+    assert response.json()["chunks_processed"] > 3
+    assert max(recorder.batch_sizes) <= 3
+    assert len(recorder.batch_sizes) > 1
 
 
 def test_search_is_similarity_ranked_and_filtered_by_project_and_metadata(
@@ -122,3 +171,21 @@ def test_embedding_failure_updates_status(client, project_payload, monkeypatch, 
     assert response.status_code == 502
     status = client.get(f"/api/projects/{project['id']}/documents/{document_id}/embedding-status").json()
     assert status == {"total_chunks": 1, "completed_chunks": 0, "failed_chunks": 1, "status": "failed"}
+
+
+def test_vector_store_failure_returns_safe_service_error(client, project_payload, monkeypatch, tmp_path, caplog):
+    configure_vector_services(monkeypatch, tmp_path)
+    project = create_project(client, project_payload)
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("private storage path or provider detail")
+
+    monkeypatch.setattr(retrieval_service.vector_store, "search", unavailable)
+    caplog.set_level("ERROR", logger="app.services.retrieval_service")
+    response = client.post("/api/search", json={
+        "project_id": project["id"], "query": "loan application status",
+    })
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Project document search is temporarily unavailable."}
+    assert "private storage path" not in response.text
+    assert any(record.exc_info for record in caplog.records)

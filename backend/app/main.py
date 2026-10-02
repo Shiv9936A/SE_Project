@@ -53,5 +53,6 @@ async def app_error_handler(_request: Request, exc: AppError):
 
 
 @app.exception_handler(SQLAlchemyError)
-async def database_error_handler(_request: Request, _exc: SQLAlchemyError):
+async def database_error_handler(_request: Request, exc: SQLAlchemyError):
+    logger.exception("Database operation failed (exception_type=%s)", type(exc).__name__)
     return JSONResponse(status_code=503, content={"detail": "Database operation failed."})

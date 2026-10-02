@@ -7,4 +7,6 @@ export const queryKeys = {
   recommendations: (projectId: string) => ["recommendations", projectId] as const,
   conversations: (projectId: string) => ["conversations", projectId] as const,
   conversation: (projectId: string, conversationId: string) => ["conversation", projectId, conversationId] as const,
+  analysisRuns: (projectId: string) => ["analysis-runs", projectId] as const,
+  analysisRun: (projectId: string, runId: string) => ["analysis-run", projectId, runId] as const,
 };

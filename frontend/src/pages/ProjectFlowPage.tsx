@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useWatch, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ArrowLeft, Check, CheckCircle2, FileText, Info, LoaderCircle, Save, ShieldCheck, Trash2, UploadCloud } from "lucide-react";
+import { ArrowLeft, Check, CheckCircle2, FileText, Info, LoaderCircle, Save, ShieldCheck, Trash2, UploadCloud, MessageCircleQuestion } from "lucide-react";
 import { Link, useMatch, useNavigate, useParams } from "react-router-dom";
 import { LongField, SelectField, TextField, ChoiceField } from "@/components/fields";
 import { NavButtons, PageFrame, StepProgress, wizardSteps } from "@/components/app-shell";
@@ -9,13 +9,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { projectSchema } from "@/lib/validation";
 import { formatBytes } from "@/lib/utils";
-import { api } from "@/services/api";
+import { api, type InterviewState } from "@/services/api";
 import { emptyProject, type ProjectForm } from "@/types/project";
 
 const stepFields: (keyof ProjectForm)[][] = [
   ["projectName", "description", "domain", "organizationType", "teamSize", "stakeholders"],
+  [],
   ["requirementStability", "expectedChanges"],
   ["riskLevel", "securityCriticality", "complianceCriticality", "formalVerification", "failureImpact", "testingRequirement"],
   ["continuousDelivery", "legacyIntegration", "stakeholderAvailability", "complexity", "projectSize", "budgetConstraint", "timelineConstraint"],
@@ -23,7 +25,8 @@ const stepFields: (keyof ProjectForm)[][] = [
 ];
 
 const stepCopy = [
-  { title: "Project information", intro: "Start with the people, purpose, and boundaries of the project." },
+  { title: "Project idea", intro: "Tell us what you want to build. We will use this to tailor the discovery interview." },
+  { title: "Adaptive discovery interview", intro: "Answer one focused question at a time. Follow-up questions adapt to what you tell us." },
   { title: "Requirements & change", intro: "Tell us how clear the requirements are today and how they may evolve." },
   { title: "Risk & assurance", intro: "Help us understand what must be protected, verified, and proven." },
   { title: "Delivery context", intro: "Share the practical conditions that shape the delivery approach." },
@@ -51,8 +54,14 @@ export default function ProjectFlowPage() {
   const [submitError, setSubmitError] = useState("");
   const [loadError, setLoadError] = useState("");
   const [submissionMessage, setSubmissionMessage] = useState("");
+  const [businessObjective, setBusinessObjective] = useState("");
+  const [usersRoles, setUsersRoles] = useState("");
+  const [interview, setInterview] = useState<InterviewState | null>(null);
+  const [interviewIndex, setInterviewIndex] = useState(0);
+  const [answerDraft, setAnswerDraft] = useState("");
+  const [interviewBusy, setInterviewBusy] = useState(false);
 
-  const { register, control, watch, trigger, getValues, reset, formState: { errors, isDirty } } = useForm<ProjectForm>({
+  const { register, control, watch, trigger, getValues, reset, setValue, formState: { errors, isDirty } } = useForm<ProjectForm>({
     resolver: zodResolver(projectSchema),
     mode: "onTouched",
     defaultValues: emptyProject,
@@ -68,6 +77,9 @@ export default function ProjectFlowPage() {
       setLoadError("");
       reset(emptyProject);
       setAttached([]);
+      setInterview(null);
+      setBusinessObjective("");
+      setUsersRoles("");
       return;
     }
     setHydrating(true);
@@ -110,7 +122,15 @@ export default function ProjectFlowPage() {
         uploaded: true,
       })));
       setSubmitted(Boolean(answers) && !isQuestionnaireRoute);
-      setStep(answers ? 5 : 0);
+      setBusinessObjective(project.initial_requirements || project.description);
+      setUsersRoles(project.stakeholders);
+      setStep(answers ? 6 : 0);
+      api.getInterviewState(project.id).then((state) => {
+        if (!active) return;
+        setInterview(state);
+        setInterviewIndex(Math.max(0, state.asked_questions.length - 1));
+        if (isQuestionnaireRoute && !answers) setStep(state.status === "completed" ? 2 : 1);
+      }).catch(() => { /* Existing projects may predate adaptive interviews. */ });
     }).catch((error: unknown) => {
       if (active) setLoadError(error instanceof Error ? error.message : "Could not load project from the backend.");
     }).finally(() => active && setHydrating(false));
@@ -120,8 +140,78 @@ export default function ProjectFlowPage() {
   async function next() {
     const fields = stepFields[step];
     if (fields.length && !(await trigger(fields))) return;
+    if (step === 0) {
+      setInterviewBusy(true);
+      setSubmitError("");
+      try {
+        const formValues = getValues();
+        let id = backendProjectId;
+        if (!id) {
+          setSubmissionMessage("Saving project profile…");
+          const created = await api.createProject({ ...formValues, initialRequirements: businessObjective || formValues.initialRequirements, stakeholders: usersRoles || formValues.stakeholders });
+          id = created.id;
+          setBackendProjectId(id);
+        } else {
+          await api.updateProject(id, { ...formValues, initialRequirements: businessObjective || formValues.initialRequirements, stakeholders: usersRoles || formValues.stakeholders });
+        }
+        setSubmissionMessage("Preparing your tailored interview…");
+        const state = await api.startInterview(id, {
+          project_idea: formValues.description,
+          business_objective: businessObjective.trim() || formValues.description,
+          users_roles: usersRoles.trim() || formValues.stakeholders,
+        });
+        setInterview(state);
+        setInterviewIndex(0);
+        setStep(1);
+        if (isNew) navigate(`/projects/${id}/questionnaire`, { replace: true });
+      } catch (error: unknown) {
+        setSubmitError(error instanceof Error ? error.message : "Could not start the interview.");
+      } finally {
+        setInterviewBusy(false);
+        setSubmissionMessage("");
+      }
+      return;
+    }
     if (step < wizardSteps.length - 1) setStep((current) => current + 1);
   }
+
+  async function submitInterviewAnswer(skipped = false) {
+    const question = interview?.asked_questions[interviewIndex];
+    if (!question || !backendProjectId || (!skipped && !answerDraft.trim())) return;
+    setInterviewBusy(true);
+    setSubmitError("");
+    try {
+      const state = await api.answerInterview(backendProjectId, question.id, skipped ? "" : answerDraft.trim(), skipped);
+      setInterview(state);
+      if (state.current_question) setInterviewIndex(state.asked_questions.length - 1);
+      else setInterviewIndex(Math.max(0, state.asked_questions.length - 1));
+      setAnswerDraft("");
+    } catch (error: unknown) {
+      setSubmitError(error instanceof Error ? error.message : skipped ? "Could not skip this interview question." : "Could not save your interview answer.");
+    } finally { setInterviewBusy(false); }
+  }
+
+  function saveInterviewAnswer() { return submitInterviewAnswer(false); }
+  function skipInterviewQuestion() { return submitInterviewAnswer(true); }
+
+  async function finishInterview() {
+    if (!backendProjectId) return;
+    setInterviewBusy(true);
+    setSubmitError("");
+    try {
+      const state = await api.completeInterview(backendProjectId);
+      setInterview(state);
+      setStep(2);
+    } catch (error: unknown) {
+      setSubmitError(error instanceof Error ? error.message : "Could not complete the interview.");
+    } finally { setInterviewBusy(false); }
+  }
+
+  useEffect(() => {
+    const question = interview?.asked_questions[interviewIndex];
+    const answer = question && interview ? interview.answers.find((item) => item.question_id === question.id)?.answer : "";
+    setAnswerDraft(answer || "");
+  }, [interview, interviewIndex]);
 
   function addFiles(fileList: FileList | null) {
     if (!fileList) return;
@@ -179,7 +269,7 @@ export default function ProjectFlowPage() {
     }
   }
 
-  const projectName = values.projectName || "New financial project";
+  const projectName = values.projectName || "New project";
   const fileNames = useMemo(() => attached.map((item) => item.name), [attached]);
 
   if (hydrating) return <PageFrame projectId={!isNew ? projectId : undefined}><div role="status" className="flex min-h-[50vh] items-center justify-center gap-3 text-slate-500"><LoaderCircle className="animate-spin" size={18} />Loading project from the backend…</div></PageFrame>;
@@ -212,22 +302,35 @@ export default function ProjectFlowPage() {
           {step === 0 && <div className="space-y-6">
             <div className="grid gap-5 md:grid-cols-2">
               <TextField name="projectName" label="Project name" placeholder="e.g. Digital lending transformation" register={register} error={errors.projectName?.message} />
-              <SelectField name="domain" label="Financial domain" options={["Digital banking", "Loan processing", "Payments", "Fraud detection", "Insurance", "Regulatory reporting", "Customer onboarding / KYC", "Investment platform", "Other"]} register={register} error={errors.domain?.message} />
-              <SelectField name="organizationType" label="Organization type" options={["Retail bank", "Commercial bank", "Credit union", "Fintech", "Insurance provider", "Investment firm", "Payment provider", "Other financial institution"]} register={register} error={errors.organizationType?.message} />
+              <LongField name="description" label="What do you want to build?" hint="Start with the project idea. Mention the problem and intended outcome; the system detects a likely domain." placeholder="e.g. An online service that helps patients find and book appointments…" register={register} error={errors.description?.message} />
+              <SelectField name="domain" label="Domain hint (we will detect from your idea)" options={["Generic software system", "Banking", "Payments", "Lending", "Insurance", "Healthcare", "Education", "E-commerce", "Logistics", "Food delivery", "Government/public services", "HR/recruitment", "Manufacturing"]} register={register} error={errors.domain?.message} />
+              <SelectField name="organizationType" label="Organization type" options={["Business", "Government", "Non-profit", "Healthcare provider", "Educational institution", "Startup", "Other"]} register={register} error={errors.organizationType?.message} />
               <TextField name="teamSize" label="Estimated team size" type="number" placeholder="8" register={register} error={errors.teamSize?.message} />
             </div>
-            <LongField name="description" label="Project description" hint="What problem are you solving, and what outcome would make this successful?" placeholder="Describe the opportunity, current process, and intended result…" register={register} error={errors.description?.message} />
-            <LongField name="stakeholders" label="Who should be involved?" hint="Include end users, business owners, delivery teams, operations, risk, or compliance roles." placeholder="e.g. customers, product owner, lending operations, security lead…" register={register} error={errors.stakeholders?.message} rows={3} />
-            <LongField name="initialRequirements" label="What should the system do? (optional)" placeholder="Share early needs or stakeholder requests. Rough notes are fine." register={register} rows={3} />
+            <label className="block space-y-2"><span className="text-sm font-medium text-slate-700">What business or user outcome should it achieve?</span><Textarea value={businessObjective} onChange={(event) => setBusinessObjective(event.target.value)} placeholder="e.g. Reduce appointment booking time and avoid scheduling conflicts" rows={3} /></label>
+            <label className="block space-y-2"><span className="text-sm font-medium text-slate-700">Who will use or be affected by it?</span><Textarea value={usersRoles || values.stakeholders} onChange={(event) => { setUsersRoles(event.target.value); setValue("stakeholders", event.target.value, { shouldDirty: true, shouldValidate: true }); }} placeholder="e.g. patients, reception staff, clinicians" rows={3} /></label>
+            <LongField name="stakeholders" label="Stakeholders and roles (for project record)" hint="Use the same roles above or add owners, operations, security, or compliance participants." placeholder="e.g. patients, reception staff, product owner" register={register} error={errors.stakeholders?.message} rows={2} />
+            <LongField name="initialRequirements" label="Initial requirement notes (optional)" placeholder="Any early needs or stakeholder requests. Rough notes are fine." register={register} rows={2} />
           </div>}
 
-          {step === 1 && <div className="space-y-7">
+          {step === 1 && <div className="space-y-6">
+            {!interview ? <div role="status" className="flex items-center gap-3 rounded-xl bg-blue-50 p-5 text-sm text-blue-800"><LoaderCircle size={18} className="animate-spin" />Starting your project interview…</div> : <>
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-blue-50 p-4"><div><p className="text-xs font-semibold uppercase tracking-wide text-blue-700">Detected domain</p><p className="mt-1 text-lg font-bold text-blue-950">{interview.detected_domain}</p></div><Badge>Question {interview.question_number} of {interview.maximum_questions}</Badge></div>
+              <div className="h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-blue-600 transition-all" style={{ width: `${Math.round((interview.question_number / interview.maximum_questions) * 100)}%` }} /></div>
+              {interview.current_question ? <>
+                <div className="rounded-2xl border border-slate-200 bg-white p-5 md:p-7"><div className="mb-4 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-blue-700"><MessageCircleQuestion size={16} />{interview.asked_questions[interviewIndex]?.topic.replaceAll("_", " ")}</div><h3 className="text-lg font-semibold leading-7 text-slate-950">{interview.asked_questions[interviewIndex]?.prompt}</h3><p className="mt-2 text-sm text-slate-500">{interview.asked_questions[interviewIndex]?.explanation}</p><label className="mt-5 block space-y-2"><span className="text-sm font-medium text-slate-700">Your answer</span><Textarea value={answerDraft} onChange={(event) => setAnswerDraft(event.target.value)} placeholder="Share what you know. You can say what is still undecided." rows={5} /></label></div>
+                <div className="flex flex-wrap items-center justify-between gap-3"><Button type="button" variant="outline" onClick={() => setInterviewIndex((index) => Math.max(0, index - 1))} disabled={interviewIndex === 0 || interviewBusy}>Previous question</Button>{interviewIndex < interview.asked_questions.length - 1 && <Button type="button" variant="outline" onClick={() => setInterviewIndex((index) => Math.min(interview!.asked_questions.length - 1, index + 1))}>Next question</Button>}<div className="flex flex-wrap items-center gap-2"><Button type="button" variant="outline" onClick={skipInterviewQuestion} disabled={interviewBusy}>Skip question</Button><Button type="button" onClick={saveInterviewAnswer} disabled={!answerDraft.trim() || interviewBusy}>{interviewBusy ? <><LoaderCircle className="animate-spin" size={16} />Saving…</> : interviewIndex === interview.asked_questions.length - 1 ? "Save & continue" : "Save answer"}</Button></div></div>
+              </> : <div className="space-y-5"><div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">Interview questions are complete. Review your answers and finish when you are ready.</div><section className="space-y-3"><h3 className="font-semibold text-slate-900">Project context</h3><SummaryLine label="Detected domain" value={interview.detected_domain} /><SummaryLine label="Business objective" value={interview.business_objective} /><SummaryLine label="Users and roles" value={interview.users_roles} /></section><section className="space-y-3"><h3 className="font-semibold text-slate-900">Interview answers</h3>{interview.asked_questions.map((question, index) => { const answer = interview.answers.find((item) => item.question_id === question.id); return <div key={question.id} className="rounded-xl border border-slate-200 p-4"><p className="text-sm font-semibold text-slate-800">{index + 1}. {question.prompt}</p><p className="mt-2 whitespace-pre-wrap text-sm text-slate-600">{answer?.skipped ? "Skipped" : answer?.answer || "Not answered"}</p></div>; })}</section><section className="space-y-2"><h3 className="font-semibold text-slate-900">Topics still to clarify</h3><p className="text-sm text-slate-500">These topics were not covered in enough detail during this interview.</p><div className="flex flex-wrap gap-2">{interview.uncovered_topics.map((topic) => <Badge key={topic} className="bg-amber-50 text-amber-800">{topic.replaceAll("_", " ")}</Badge>)}</div></section><Button type="button" onClick={finishInterview} disabled={interviewBusy || interview.status === "completed"}>{interviewBusy && <LoaderCircle className="animate-spin" size={16} />}{interview.status === "completed" ? "Interview completed" : "Finish interview & continue"}</Button></div>}
+            </>}
+          </div>}
+
+          {step === 2 && <div className="space-y-7">
             <ChoiceField control={control} errors={errors} name="requirementStability" label="How stable are the requirements?" options={["Stable", "Moderately Changing", "Frequently Changing"]} />
             <ChoiceField control={control} errors={errors} name="expectedChanges" label="How often do you expect requirements to change?" options={["Rare", "Occasional", "Frequent"]} />
             <div className="rounded-xl bg-blue-50/70 p-4 text-sm leading-6 text-blue-900"><Info size={16} className="mr-2 inline" />If the goals are clear but details may evolve, say so. The delivery recommendation considers both stability and expected change.</div>
           </div>}
 
-          {step === 2 && <div className="space-y-7">
+          {step === 3 && <div className="space-y-7">
             <div className="grid gap-7 md:grid-cols-2">
               <ChoiceField control={control} errors={errors} name="riskLevel" label="Overall project risk" options={["Low", "Medium", "High"]} />
               <ChoiceField control={control} errors={errors} name="securityCriticality" label="Security criticality" options={["Low", "Medium", "High"]} />
@@ -240,7 +343,7 @@ export default function ProjectFlowPage() {
             </div>
           </div>}
 
-          {step === 3 && <div className="space-y-7">
+          {step === 4 && <div className="space-y-7">
             <div className="grid gap-7 md:grid-cols-2">
               <ChoiceField control={control} errors={errors} name="continuousDelivery" label="Need continuous delivery?" options={["Yes", "No"]} />
               <ChoiceField control={control} errors={errors} name="legacyIntegration" label="Integrate with legacy systems?" options={["Yes", "No"]} />
@@ -252,7 +355,7 @@ export default function ProjectFlowPage() {
             </div>
           </div>}
 
-          {step === 4 && <div className="space-y-5">
+          {step === 5 && <div className="space-y-5">
             <label htmlFor="project-files" className="flex min-h-48 cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50/70 px-5 text-center transition hover:border-blue-300 hover:bg-blue-50/40">
               <span className="grid size-12 place-items-center rounded-2xl bg-white text-blue-700 shadow-sm"><UploadCloud size={22} /></span>
               <span className="mt-4 text-sm font-semibold text-slate-800">Choose reference files</span>
@@ -264,7 +367,7 @@ export default function ProjectFlowPage() {
             {fileNames.length === 0 && <p className="text-center text-xs text-slate-400">No files selected. Continue to review your questionnaire.</p>}
           </div>}
 
-          {step === 5 && <div className="space-y-6">
+          {step === 6 && <div className="space-y-6">
             <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-4"><div className="flex items-center gap-2 text-sm font-semibold text-blue-900"><ShieldCheck size={17} />Review before submission</div><p className="mt-1 text-xs leading-5 text-blue-800">Your answers become a project brief for the next analysis phase. Recommendations and regulatory interpretations will still require human review.</p></div>
             <section><h3 className="mb-1 text-xs font-bold uppercase tracking-wider text-slate-400">Project profile</h3><SummaryLine label="Project name" value={watch("projectName")} /><SummaryLine label="Domain" value={watch("domain")} /><SummaryLine label="Organization" value={watch("organizationType")} /><SummaryLine label="Team size" value={`${watch("teamSize")} people`} /><SummaryLine label="Description" value={watch("description")} /><SummaryLine label="Stakeholders" value={watch("stakeholders")} /></section>
             <section><h3 className="mb-1 text-xs font-bold uppercase tracking-wider text-slate-400">Requirements & change</h3><SummaryLine label="Requirement stability" value={watch("requirementStability")} /><SummaryLine label="Expected changes" value={watch("expectedChanges")} /><SummaryLine label="Initial requirement notes" value={watch("initialRequirements") || "Not provided"} /></section>
@@ -274,10 +377,11 @@ export default function ProjectFlowPage() {
           </div>}
 
           {submitError && <div role="alert" className="mt-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{submitError}</div>}
-          <NavButtons onBack={() => setStep((current) => Math.max(0, current - 1))} onNext={step === 5 ? submit : next} backDisabled={step === 0 || saving} nextDisabled={saving} nextLabel={step === 5 ? (saving ? "Submitting…" : "Submit project brief") : step === 4 ? "Review answers" : "Continue"} />
+          {step !== 1 && <NavButtons onBack={() => setStep((current) => Math.max(0, current - 1))} onNext={step === 6 ? submit : next} backDisabled={step === 0 || saving || interviewBusy} nextDisabled={saving || interviewBusy} nextLabel={step === 6 ? (saving ? "Submitting…" : "Submit project brief") : step === 5 ? "Review answers" : "Continue"} />}
         </CardContent>
       </Card>
       <p className="mt-4 flex items-center justify-center gap-2 text-center text-xs text-slate-400"><Save size={13} />Submit the project to save your answers to the backend. Saved projects load from the database when you return.</p>
     </div>
   </PageFrame>;
 }
+

@@ -19,6 +19,17 @@ describe("backend API service", () => {
     }));
   });
 
+  it("sends the minimal orchestration request to the FastAPI endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "completed" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.orchestrateProject("project / 1", 3);
+
+    expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:8000/api/projects/project%20%2F%201/orchestrate", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ top_k: 3 }),
+    }));
+  });
+
   it("uses multipart form data for document uploads", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ document_id: "doc-1" }, 201));
     vi.stubGlobal("fetch", fetchMock);

@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Award, LoaderCircle, RefreshCw, ShieldAlert, Sparkles } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
@@ -16,7 +16,12 @@ export default function RecommendationPage() {
   const toast = useToast();
   const projectQuery = useQuery({ queryKey: queryKeys.project(projectId), queryFn: () => api.getProject(projectId), enabled: Boolean(projectId) });
   const historyQuery = useQuery({ queryKey: queryKeys.recommendations(projectId), queryFn: () => api.recommendationHistory(projectId), enabled: Boolean(projectId) });
+  const pendingGenerations = useMutationState({
+    filters: { mutationKey: ["sdlc-recommendation", projectId], status: "pending" },
+    select: (mutation) => mutation.state.status,
+  });
   const generate = useMutation({
+    mutationKey: ["sdlc-recommendation", projectId],
     mutationFn: () => api.generateRecommendation(projectId),
     onSuccess: async () => {
       toast("SDLC recommendation generated and saved.", "success");
@@ -33,6 +38,7 @@ export default function RecommendationPage() {
   if (projectQuery.isError || historyQuery.isError) return <PageFrame projectId={projectId}><PageError message={projectQuery.error?.message || historyQuery.error?.message || "Unable to load recommendation."} onRetry={() => { projectQuery.refetch(); historyQuery.refetch(); }} /></PageFrame>;
 
   const project = projectQuery.data;
+  const generating = generate.isPending || pendingGenerations.length > 0;
   const supportedHistory = historyQuery.data.filter((item) => SUPPORTED_SDLC_MODELS.includes(item.recommended_model));
   const result = supportedHistory[0];
   const testingStrategy = project.questionnaire
@@ -45,9 +51,9 @@ export default function RecommendationPage() {
   return <PageFrame projectId={projectId}>
     <div className="flex flex-wrap items-end justify-between gap-4">
       <div><p className="text-xs font-semibold uppercase tracking-[.18em] text-blue-700">Decision support</p><h1 className="mt-2 text-3xl font-bold text-slate-950">SDLC recommendation</h1><p className="mt-2 text-sm text-slate-500">Evidence-based delivery guidance for {project.project_name}.</p></div>
-      <Button onClick={() => generate.mutate()} disabled={generate.isPending || !project.questionnaire}>
-        {generate.isPending ? <LoaderCircle className="animate-spin" size={16} /> : <RefreshCw size={16} />}
-        {generate.isPending ? "Analyzing project…" : result ? "Regenerate recommendation" : "Generate recommendation"}
+      <Button onClick={() => generate.mutate()} disabled={generating || !project.questionnaire}>
+        {generating ? <LoaderCircle className="animate-spin" size={16} /> : <RefreshCw size={16} />}
+        {generating ? "Analyzing project…" : result ? "Regenerate recommendation" : "Generate recommendation"}
       </Button>
     </div>
 

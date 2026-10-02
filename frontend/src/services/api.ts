@@ -93,6 +93,117 @@ export type ApiSearchResult = {
   text: string;
 };
 
+export type AgentRunStatus = "pending" | "completed" | "partial" | "failed" | "skipped";
+export type AnalysisStatus = "needs_review" | "partial" | "reviewed";
+export type RequirementCategory = "functional" | "non_functional" | "business_rule" | "data" | "integration" | "security_privacy_compliance" | "operational";
+export type AnalysisRequirement = {
+  requirement_id: string;
+  category: RequirementCategory;
+  title: string;
+  description: string;
+  priority: "critical" | "high" | "medium" | "low";
+  confidence: number;
+  source_type: "project_profile" | "questionnaire" | "interview" | "uploaded_document" | "rag_evidence" | "inferred";
+  source_reference: string | null;
+  evidence: string;
+  acceptance_criteria: string[];
+  ambiguities: string[];
+  dependencies: string[];
+  tags: string[];
+  testability: "high" | "medium" | "low";
+  missing_information: string[];
+};
+export type AnalysisAmbiguity = {
+  description: string;
+  related_requirement_id: string | null;
+  severity: "critical" | "high" | "medium" | "low";
+  clarification_question: string;
+  source_reference: string | null;
+};
+export type AnalysisCitation = { source_type: string; source_reference: string; evidence: string };
+export type AnalysisConflict = {
+  description: string;
+  severity: "critical" | "high" | "medium" | "low";
+  sources: AnalysisCitation[];
+  clarification_question: string;
+};
+export type RequirementsAnalysis = {
+  analysis_id: string;
+  project_id: string;
+  version: number;
+  status: AnalysisStatus;
+  provider: string;
+  model: string;
+  created_at: string;
+  summary: string;
+  requirements: AnalysisRequirement[];
+  ambiguities: AnalysisAmbiguity[];
+  conflicts: AnalysisConflict[];
+  completeness: { area: string; status: "covered" | "partial" | "missing"; note: string }[];
+  clarification_questions: string[];
+  quality_assessment: Record<string, "high" | "medium" | "low">;
+  evidence_sources: AnalysisCitation[];
+};
+export type GovernanceAnalysisResult = {
+  project_id: string;
+  requirements_analysis_id: string;
+  methodology: { name: string; confidence: number; reasoning: { factor: string; observation: string; impact: string; source_references: string[] }[] };
+  project_assessment: { complexity: string; risk_level: string; requirements_stability: string; integration_complexity: string; security_sensitivity: string; compliance_impact: string };
+  baseline_scores: { model: string; score: number }[];
+  development_lifecycle: { phase: string; activities: string[]; deliverables: string[]; exit_criteria: string[]; requirement_references: string[] }[];
+  testing_strategy: Record<string, { recommendation: string; requirement_references: string[] }[]>;
+  security_governance: { activity: string; requirement_references: string[] }[];
+  documentation_requirements: { document: string; rationale: string; requirement_references: string[] }[];
+  governance_checkpoints: { checkpoint: string; purpose: string; entry_conditions: string[]; exit_conditions: string[]; required_artifacts: string[] }[];
+  risks: { risk_id: string; title: string; description: string; severity: "low" | "medium" | "high"; likelihood: "low" | "medium" | "high"; mitigation: string; source_references: string[]; basis: "observed" | "potential" }[];
+  quality_gates: { gate: string; checks: string[]; requirement_references: string[] }[];
+  prerequisites: string[];
+  evidence: { source_type: string; source_reference: string; observation: string }[];
+  unresolved_questions: string[];
+  fallback_reason: string | null;
+};
+export type GovernanceAnalysis = {
+  id: string;
+  project_id: string;
+  requirements_analysis_id: string;
+  version: number;
+  status: AnalysisStatus;
+  provider: string;
+  model: string;
+  created_at: string;
+  updated_at: string;
+  result: GovernanceAnalysisResult;
+};
+
+export type OrchestrationResult = {
+  orchestration_id: string;
+  analysis_run_id: string;
+  analysis_run_version: number;
+  project_id: string;
+  status: "running" | "completed" | "partial" | "failed";
+  requirements_analysis_id: string | null;
+  governance_analysis_id: string | null;
+  agents: { name: "requirements" | "governance"; status: AgentRunStatus }[];
+  requirements_analysis: RequirementsAnalysis | null;
+  governance_analysis: GovernanceAnalysis | null;
+  warnings: string[];
+  errors: { code: string; message: string; recoverable: boolean }[];
+  created_at: string;
+};
+
+export type AnalysisRunHistoryItem = {
+  id: string; project_id: string; version: number; status: "running" | "completed" | "partial" | "failed";
+  orchestration_version: string; started_at: string; completed_at: string | null; created_at: string;
+  requirements_analysis_id: string | null; governance_analysis_id: string | null;
+  requirement_count: number; ambiguity_count: number; conflict_count: number; risk_count: number;
+  methodology: string | null; warnings: string[]; errors: { code: string; message: string; recoverable: boolean }[];
+};
+export type AnalysisRunDetail = AnalysisRunHistoryItem & {
+  agents: { name: "requirements" | "governance"; status: AgentRunStatus }[];
+  requirements_analysis: RequirementsAnalysis | null;
+  governance_analysis: GovernanceAnalysis | null;
+};
+
 export type DashboardAnalytics = {
   project_count: number;
   document_count: number;
@@ -121,6 +232,15 @@ export type ApiProject = {
     justification: string;
     risk_factors: string[];
   } | null;
+};
+
+export type InterviewQuestion = { id: string; topic: string; prompt: string; explanation: string; priority?: "high" | "medium" | "low" | null };
+export type InterviewAnswer = { question_id: string; topic: string; answer: string; skipped?: boolean };
+export type InterviewState = {
+  id: string; project_id: string; project_idea: string; business_objective: string; users_roles: string;
+  detected_domain: string; asked_questions: InterviewQuestion[]; answers: InterviewAnswer[];
+  covered_topics: string[]; uncovered_topics: string[]; current_question: InterviewQuestion | null;
+  question_number: number; maximum_questions: number; status: string; created_at: string; updated_at: string; completed_at: string | null;
 };
 
 export class ApiError extends Error {
@@ -219,6 +339,22 @@ export const api = {
     });
   },
 
+  startInterview(projectId: string, input: { project_idea: string; business_objective: string; users_roles: string }) {
+    return request<InterviewState>(`/api/projects/${encodeURIComponent(projectId)}/interview/start`, { method: "POST", body: JSON.stringify(input) });
+  },
+
+  getInterviewState(projectId: string, signal?: AbortSignal) {
+    return request<InterviewState>(`/api/projects/${encodeURIComponent(projectId)}/interview/state`, { signal });
+  },
+
+  answerInterview(projectId: string, questionId: string, answer: string, skipped = false) {
+    return request<InterviewState>(`/api/projects/${encodeURIComponent(projectId)}/interview/answer`, { method: "POST", body: JSON.stringify({ question_id: questionId, answer, skipped }) });
+  },
+
+  completeInterview(projectId: string) {
+    return request<InterviewState>(`/api/projects/${encodeURIComponent(projectId)}/interview/complete`, { method: "POST" });
+  },
+
   saveQuestionnaire(projectId: string, values: ProjectForm) {
     return request<ApiQuestionnaire>(`/api/projects/${encodeURIComponent(projectId)}/questionnaire`, {
       method: "POST",
@@ -312,5 +448,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ model_a: modelA, model_b: modelB, top_k: 5 }),
     });
+  },
+
+  orchestrateProject(projectId: string, topK = 5) {
+    return request<OrchestrationResult>(`/api/projects/${encodeURIComponent(projectId)}/orchestrate`, {
+      method: "POST",
+      body: JSON.stringify({ top_k: topK }),
+    });
+  },
+
+  listAnalysisRuns(projectId: string, limit = 50, offset = 0, signal?: AbortSignal) {
+    return request<AnalysisRunHistoryItem[]>(`/api/projects/${encodeURIComponent(projectId)}/analysis-runs?limit=${limit}&offset=${offset}`, { signal });
+  },
+
+  getAnalysisRun(projectId: string, runId: string, signal?: AbortSignal) {
+    return request<AnalysisRunDetail>(`/api/projects/${encodeURIComponent(projectId)}/analysis-runs/${encodeURIComponent(runId)}`, { signal });
   },
 };

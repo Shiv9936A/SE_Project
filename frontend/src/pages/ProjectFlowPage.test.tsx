@@ -14,6 +14,6 @@ describe("questionnaire form", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^Continue$/ }));
     expect(await screen.findByText("Enter a project name.")).toBeInTheDocument();
-    expect(screen.getByText("Choose a financial domain.")).toBeInTheDocument();
+    expect(screen.getByText("Add at least one stakeholder group.")).toBeInTheDocument();
   });
 });

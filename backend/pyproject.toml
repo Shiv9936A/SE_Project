@@ -1,7 +1,7 @@
 [project]
 name = "requirements-studio-api"
 version = "0.1.0"
-description = "Agentic requirements engineering API for financial projects"
+description = "Requirements discovery, document intelligence, and SDLC decision support API"
 requires-python = ">=3.11"
 dynamic = ["dependencies"]
 
